@@ -62,6 +62,38 @@ public class SftpConfig {
     private String targetS3Region;
     @Column(name = "target_s3_path_style_access")
     private Boolean targetS3PathStyleAccess;
+    @Column(name = "target_smb_host", length = 255)
+    private String targetSmbHost;
+    @Column(name = "target_smb_share", length = 100)
+    private String targetSmbShare;
+    @Column(name = "target_smb_domain", length = 100)
+    private String targetSmbDomain;
+    @Column(name = "target_smb_username", length = 100)
+    private String targetSmbUsername;
+    @Column(name = "target_smb_password", length = 100)
+    private String targetSmbPassword;
+    @Column(name = "target_smb_path", length = 255)
+    private String targetSmbPath;
+    @Column(name = "target_webdav_base_url", length = 500)
+    private String targetWebdavBaseUrl;
+    @Column(name = "target_webdav_username", length = 100)
+    private String targetWebdavUsername;
+    @Column(name = "target_webdav_password", length = 100)
+    private String targetWebdavPassword;
+    @Column(name = "target_webdav_path", length = 255)
+    private String targetWebdavPath;
+    @Column(name = "target_http_url", length = 500)
+    private String targetHttpUrl;
+    @Column(name = "target_http_method", length = 20)
+    private String targetHttpMethod;
+    @Column(name = "target_http_username", length = 100)
+    private String targetHttpUsername;
+    @Column(name = "target_http_password", length = 100)
+    private String targetHttpPassword;
+    @Column(name = "target_http_file_field", length = 100)
+    private String targetHttpFileField;
+    @Column(name = "target_http_path_param", length = 100)
+    private String targetHttpPathParam;
 
     public Long getId() {
         return id;
@@ -238,4 +270,37 @@ public class SftpConfig {
     public void setTargetS3PathStyleAccess(Boolean targetS3PathStyleAccess) {
         this.targetS3PathStyleAccess = targetS3PathStyleAccess;
     }
+
+    public String getTargetSmbHost() { return targetSmbHost; }
+    public void setTargetSmbHost(String targetSmbHost) { this.targetSmbHost = targetSmbHost; }
+    public String getTargetSmbShare() { return targetSmbShare; }
+    public void setTargetSmbShare(String targetSmbShare) { this.targetSmbShare = targetSmbShare; }
+    public String getTargetSmbDomain() { return targetSmbDomain; }
+    public void setTargetSmbDomain(String targetSmbDomain) { this.targetSmbDomain = targetSmbDomain; }
+    public String getTargetSmbUsername() { return targetSmbUsername; }
+    public void setTargetSmbUsername(String targetSmbUsername) { this.targetSmbUsername = targetSmbUsername; }
+    public String getTargetSmbPassword() { return targetSmbPassword; }
+    public void setTargetSmbPassword(String targetSmbPassword) { this.targetSmbPassword = targetSmbPassword; }
+    public String getTargetSmbPath() { return targetSmbPath; }
+    public void setTargetSmbPath(String targetSmbPath) { this.targetSmbPath = targetSmbPath; }
+    public String getTargetWebdavBaseUrl() { return targetWebdavBaseUrl; }
+    public void setTargetWebdavBaseUrl(String targetWebdavBaseUrl) { this.targetWebdavBaseUrl = targetWebdavBaseUrl; }
+    public String getTargetWebdavUsername() { return targetWebdavUsername; }
+    public void setTargetWebdavUsername(String targetWebdavUsername) { this.targetWebdavUsername = targetWebdavUsername; }
+    public String getTargetWebdavPassword() { return targetWebdavPassword; }
+    public void setTargetWebdavPassword(String targetWebdavPassword) { this.targetWebdavPassword = targetWebdavPassword; }
+    public String getTargetWebdavPath() { return targetWebdavPath; }
+    public void setTargetWebdavPath(String targetWebdavPath) { this.targetWebdavPath = targetWebdavPath; }
+    public String getTargetHttpUrl() { return targetHttpUrl; }
+    public void setTargetHttpUrl(String targetHttpUrl) { this.targetHttpUrl = targetHttpUrl; }
+    public String getTargetHttpMethod() { return targetHttpMethod; }
+    public void setTargetHttpMethod(String targetHttpMethod) { this.targetHttpMethod = targetHttpMethod; }
+    public String getTargetHttpUsername() { return targetHttpUsername; }
+    public void setTargetHttpUsername(String targetHttpUsername) { this.targetHttpUsername = targetHttpUsername; }
+    public String getTargetHttpPassword() { return targetHttpPassword; }
+    public void setTargetHttpPassword(String targetHttpPassword) { this.targetHttpPassword = targetHttpPassword; }
+    public String getTargetHttpFileField() { return targetHttpFileField; }
+    public void setTargetHttpFileField(String targetHttpFileField) { this.targetHttpFileField = targetHttpFileField; }
+    public String getTargetHttpPathParam() { return targetHttpPathParam; }
+    public void setTargetHttpPathParam(String targetHttpPathParam) { this.targetHttpPathParam = targetHttpPathParam; }
 }

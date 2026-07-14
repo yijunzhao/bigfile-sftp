@@ -41,6 +41,22 @@ public record SftpConfigResponse(
         String targetS3Bucket,
         String targetS3Prefix,
         String targetS3Region,
-        Boolean targetS3PathStyleAccess
+        Boolean targetS3PathStyleAccess,
+        String targetSmbHost,
+        String targetSmbShare,
+        String targetSmbDomain,
+        String targetSmbUsername,
+        String targetSmbPassword,
+        String targetSmbPath,
+        String targetWebdavBaseUrl,
+        String targetWebdavUsername,
+        String targetWebdavPassword,
+        String targetWebdavPath,
+        String targetHttpUrl,
+        String targetHttpMethod,
+        String targetHttpUsername,
+        String targetHttpPassword,
+        String targetHttpFileField,
+        String targetHttpPathParam
 ) {
 }

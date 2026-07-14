@@ -25,6 +25,22 @@ const form = reactive({
   targetS3Prefix: '',
   targetS3Region: 'us-east-1',
   targetS3PathStyleAccess: true,
+  targetSmbHost: '',
+  targetSmbShare: '',
+  targetSmbDomain: '',
+  targetSmbUsername: '',
+  targetSmbPassword: '',
+  targetSmbPath: '',
+  targetWebdavBaseUrl: '',
+  targetWebdavUsername: '',
+  targetWebdavPassword: '',
+  targetWebdavPath: '',
+  targetHttpUrl: '',
+  targetHttpMethod: 'POST',
+  targetHttpUsername: '',
+  targetHttpPassword: '',
+  targetHttpFileField: 'file',
+  targetHttpPathParam: 'path',
 })
 
 const loading = ref(false)
@@ -43,7 +59,10 @@ const canSubmit = computed(() => {
   const localTargetValid = form.targetType === 'LOCAL' && form.syncPath.trim()
   const sftpTargetValid = form.targetType === 'SFTP' && form.targetHost.trim() && Number.isInteger(targetPort) && targetPort >= 1 && targetPort <= 65535 && form.targetUsername.trim() && form.targetPassword && form.targetPath.trim().startsWith('/')
   const s3TargetValid = form.targetType === 'S3' && form.targetS3Endpoint.trim() && form.targetS3AccessKey.trim() && form.targetS3SecretKey && form.targetS3Bucket.trim()
-  return form.host.trim() && Number.isInteger(port) && port >= 1 && port <= 65535 && form.username.trim() && form.password && form.sftpPath.trim().startsWith('/') && bandwidthLimitValid && parallelCountValid && (localTargetValid || sftpTargetValid || s3TargetValid)
+  const smbTargetValid = form.targetType === 'SMB' && form.targetSmbHost.trim() && form.targetSmbShare.trim() && form.targetSmbUsername.trim() && form.targetSmbPassword
+  const webdavTargetValid = form.targetType === 'WEBDAV' && form.targetWebdavBaseUrl.trim()
+  const httpTargetValid = form.targetType === 'HTTP' && form.targetHttpUrl.trim()
+  return form.host.trim() && Number.isInteger(port) && port >= 1 && port <= 65535 && form.username.trim() && form.password && form.sftpPath.trim().startsWith('/') && bandwidthLimitValid && parallelCountValid && (localTargetValid || sftpTargetValid || s3TargetValid || smbTargetValid || webdavTargetValid || httpTargetValid)
 })
 
 onMounted(loadConfig)
@@ -128,6 +147,22 @@ function payload() {
     targetS3Prefix: form.targetS3Prefix.trim(),
     targetS3Region: form.targetS3Region.trim() || 'us-east-1',
     targetS3PathStyleAccess: Boolean(form.targetS3PathStyleAccess),
+    targetSmbHost: form.targetSmbHost.trim(),
+    targetSmbShare: form.targetSmbShare.trim(),
+    targetSmbDomain: form.targetSmbDomain.trim(),
+    targetSmbUsername: form.targetSmbUsername.trim(),
+    targetSmbPassword: form.targetSmbPassword,
+    targetSmbPath: form.targetSmbPath.trim(),
+    targetWebdavBaseUrl: form.targetWebdavBaseUrl.trim(),
+    targetWebdavUsername: form.targetWebdavUsername.trim(),
+    targetWebdavPassword: form.targetWebdavPassword,
+    targetWebdavPath: form.targetWebdavPath.trim(),
+    targetHttpUrl: form.targetHttpUrl.trim(),
+    targetHttpMethod: form.targetHttpMethod.trim() || 'POST',
+    targetHttpUsername: form.targetHttpUsername.trim(),
+    targetHttpPassword: form.targetHttpPassword,
+    targetHttpFileField: form.targetHttpFileField.trim() || 'file',
+    targetHttpPathParam: form.targetHttpPathParam.trim() || 'path',
   }
 }
 
@@ -226,7 +261,19 @@ async function request(url, options = {}) {
           </label>
           <label class="radio-item">
             <input v-model="form.targetType" type="radio" value="S3" />
-            S3/MinIO对象存储
+            S3/MinIO/OSS/COS/OBS对象存储
+          </label>
+          <label class="radio-item">
+            <input v-model="form.targetType" type="radio" value="SMB" />
+            SMB/NAS共享目录
+          </label>
+          <label class="radio-item">
+            <input v-model="form.targetType" type="radio" value="WEBDAV" />
+            WebDAV服务
+          </label>
+          <label class="radio-item">
+            <input v-model="form.targetType" type="radio" value="HTTP" />
+            HTTP上传接口
           </label>
         </div>
 
@@ -296,6 +343,95 @@ async function request(url, options = {}) {
           <label class="checkbox-item wide">
             <input v-model="form.targetS3PathStyleAccess" type="checkbox" />
             MinIO Path Style Access
+          </label>
+        </template>
+
+        <template v-if="form.targetType === 'SMB'">
+          <label>
+            <span>SMB服务器地址</span>
+            <input v-model.trim="form.targetSmbHost" maxlength="255" required placeholder="例如：192.168.2.200" />
+          </label>
+
+          <label>
+            <span>SMB共享名</span>
+            <input v-model.trim="form.targetSmbShare" maxlength="100" required placeholder="例如：backup" />
+          </label>
+
+          <label>
+            <span>SMB域</span>
+            <input v-model.trim="form.targetSmbDomain" maxlength="100" placeholder="工作组或域，可留空" />
+          </label>
+
+          <label>
+            <span>SMB用户名</span>
+            <input v-model.trim="form.targetSmbUsername" maxlength="100" required autocomplete="off" />
+          </label>
+
+          <label>
+            <span>SMB密码</span>
+            <input v-model="form.targetSmbPassword" maxlength="100" required type="password" autocomplete="off" />
+          </label>
+
+          <label class="wide">
+            <span>SMB目录路径</span>
+            <input v-model.trim="form.targetSmbPath" maxlength="255" placeholder="共享目录内相对路径，例如：bigfile/sftp-sync，可留空" />
+          </label>
+        </template>
+
+        <template v-if="form.targetType === 'WEBDAV'">
+          <label class="wide">
+            <span>WebDAV基础地址</span>
+            <input v-model.trim="form.targetWebdavBaseUrl" maxlength="500" required placeholder="例如：https://dav.example.com/remote.php/dav/files/user" />
+          </label>
+
+          <label>
+            <span>WebDAV用户名</span>
+            <input v-model.trim="form.targetWebdavUsername" maxlength="100" autocomplete="off" />
+          </label>
+
+          <label>
+            <span>WebDAV密码</span>
+            <input v-model="form.targetWebdavPassword" maxlength="100" type="password" autocomplete="off" />
+          </label>
+
+          <label class="wide">
+            <span>WebDAV目录路径</span>
+            <input v-model.trim="form.targetWebdavPath" maxlength="255" placeholder="基础地址下相对路径，例如：backup/bigfile，可留空" />
+          </label>
+        </template>
+
+        <template v-if="form.targetType === 'HTTP'">
+          <label class="wide">
+            <span>HTTP上传地址</span>
+            <input v-model.trim="form.targetHttpUrl" maxlength="500" required placeholder="例如：https://api.example.com/upload" />
+          </label>
+
+          <label>
+            <span>HTTP方法</span>
+            <select v-model="form.targetHttpMethod">
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+            </select>
+          </label>
+
+          <label>
+            <span>HTTP用户名</span>
+            <input v-model.trim="form.targetHttpUsername" maxlength="100" autocomplete="off" />
+          </label>
+
+          <label>
+            <span>HTTP密码</span>
+            <input v-model="form.targetHttpPassword" maxlength="100" type="password" autocomplete="off" />
+          </label>
+
+          <label>
+            <span>文件字段名</span>
+            <input v-model.trim="form.targetHttpFileField" maxlength="100" placeholder="默认：file" />
+          </label>
+
+          <label>
+            <span>路径字段名</span>
+            <input v-model.trim="form.targetHttpPathParam" maxlength="100" placeholder="默认：path" />
           </label>
         </template>
 

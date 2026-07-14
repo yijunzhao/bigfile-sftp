@@ -1,6 +1,6 @@
 # Bigfile SFTP
 
-Bigfile SFTP 是一个面向大文件同步场景的 Web 工具，前端基于 Vue 3，后端基于 Java 17、Spring Boot 3.5、Apache Camel、H2 和 AWS S3 SDK 实现。项目支持从源 SFTP 服务器同步文件到本地目录、远程 SFTP 服务器或 S3/MinIO 对象存储。
+Bigfile SFTP 是一个面向大文件同步场景的 Web 工具，前端基于 Vue 3，后端基于 Java 17、Spring Boot 3.5、Apache Camel、H2、AWS S3 SDK 和 SMBJ 实现。项目支持从源 SFTP 服务器同步文件到本地目录、远程 SFTP、S3 兼容对象存储、SMB/NAS、WebDAV 或 HTTP 自定义上传接口。
 
 ## 模块说明
 
@@ -14,15 +14,20 @@ bigfile-sftp
 ## 主要功能
 
 - 源端支持 SFTP 服务器绝对路径扫描与同步。
-- 目标端支持三种类型：
+- 目标端支持多种类型：
   - 本地文件同步路径
   - 远程 SFTP 服务
-  - S3/MinIO 对象存储
+  - S3/MinIO/OSS/COS/OBS 等 S3 兼容对象存储
+  - SMB/NAS 共享目录
+  - WebDAV 服务
+  - HTTP 自定义上传接口
 - 支持文件级任务队列和可配置并发文件数。
 - 支持全局总传输限速，多个并发文件共享同一个限速值。
 - 支持大文件流式传输，避免将完整文件加载到 JVM 内存。
-- 本地/SFTP 目标支持 `.part` 临时文件写入和断点续传。
-- S3/MinIO 目标支持 Multipart Upload 断点续传。
+- 本地/SFTP/SMB 目标支持 `.part` 临时文件写入和断点续传。
+- S3 兼容对象存储目标支持 Multipart Upload 断点续传。
+- WebDAV 目标支持 `.part` 临时文件和完成后 MOVE 重命名。
+- HTTP 目标支持 multipart/form-data 流式上传。
 - 支持 H2 文件数据库保存页面配置和 S3 Multipart 状态。
 - 前端页面展示远端目录扫描结果、同步结果和失败文件列表。
 
@@ -43,6 +48,8 @@ bigfile-sftp
 - H2 文件数据库
 - Apache Camel SFTP/File
 - AWS SDK for Java v2 S3，用于 MinIO/S3 Multipart Upload
+- SMBJ，用于 SMB/NAS 共享目录写入
+- Java 17 HttpClient，用于 WebDAV 和 HTTP 上传接口
 
 ## 环境要求
 
@@ -50,7 +57,7 @@ bigfile-sftp
 - Maven 3.8+
 - Node.js 22.18+ 或满足前端 `package.json` 中的 engines 要求
 - 可访问的源 SFTP 服务器
-- 可选：目标 SFTP 服务器或 MinIO/S3 服务
+- 可选：目标 SFTP、S3 兼容对象存储、SMB/NAS、WebDAV 或 HTTP 上传服务
 
 ## 数据库说明
 
@@ -201,11 +208,11 @@ http://localhost:8080
 源 SFTP -> 后端流式转发 -> 目标 SFTP
 ```
 
-### 目标类型：S3/MinIO 对象存储
+### 目标类型：S3/MinIO/OSS/COS/OBS 对象存储
 
-选择 `S3/MinIO对象存储` 后填写：
+选择 `S3/MinIO/OSS/COS/OBS对象存储` 后填写：
 
-- `S3 Endpoint`：MinIO 或 S3 兼容服务地址，例如 `http://192.168.2.150:9000`。
+- `S3 Endpoint`：MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS 等 S3 兼容服务地址，例如 `http://192.168.2.150:9000`。
 - `S3 Access Key`
 - `S3 Secret Key`
 - `S3 Bucket`
@@ -216,7 +223,58 @@ http://localhost:8080
 同步链路：
 
 ```text
-源 SFTP -> 后端分片读取 -> S3/MinIO Multipart Upload
+源 SFTP -> 后端分片读取 -> S3 兼容 Multipart Upload
+```
+
+### 目标类型：SMB/NAS 共享目录
+
+选择 `SMB/NAS共享目录` 后填写：
+
+- `SMB服务器地址`：NAS 或 Windows 文件共享服务器 IP/域名。
+- `SMB共享名`：共享目录名称，例如 `backup`。
+- `SMB域`：域或工作组，可留空。
+- `SMB用户名`
+- `SMB密码`
+- `SMB目录路径`：共享目录内相对路径，例如 `bigfile/sftp-sync`，可留空。
+
+同步链路：
+
+```text
+源 SFTP -> 后端流式转发 -> SMB/NAS 共享目录
+```
+
+### 目标类型：WebDAV 服务
+
+选择 `WebDAV服务` 后填写：
+
+- `WebDAV基础地址`：WebDAV 根地址，例如 `https://dav.example.com/remote.php/dav/files/user`。
+- `WebDAV用户名`：可选，填写后使用 Basic Auth。
+- `WebDAV密码`：可选。
+- `WebDAV目录路径`：基础地址下相对路径，例如 `backup/bigfile`，可留空。
+
+同步链路：
+
+```text
+源 SFTP -> 后端流式 PUT -> WebDAV .part -> MOVE 正式文件
+```
+
+### 目标类型：HTTP 上传接口
+
+选择 `HTTP上传接口` 后填写：
+
+- `HTTP上传地址`：接收文件的接口地址，例如 `https://api.example.com/upload`。
+- `HTTP方法`：支持 `POST` 或 `PUT`。
+- `HTTP用户名`：可选，填写后使用 Basic Auth。
+- `HTTP密码`：可选。
+- `文件字段名`：multipart 文件字段名，默认 `file`。
+- `路径字段名`：multipart 相对路径字段名，默认 `path`。
+
+HTTP 请求格式为 `multipart/form-data`，其中包含一个路径字段和一个文件字段。
+
+同步链路：
+
+```text
+源 SFTP -> 后端流式 multipart/form-data -> HTTP上传接口
 ```
 
 ## 操作步骤
@@ -232,9 +290,9 @@ http://localhost:8080
 
 ## 大文件与断点续传说明
 
-### 本地/SFTP 目标
+### 本地/SFTP/SMB 目标
 
-本地和远程 SFTP 目标使用 `.part` 临时文件机制：
+本地、远程 SFTP 和 SMB/NAS 目标使用 `.part` 临时文件机制：
 
 ```text
 filename.part  # 同步中或中断后的临时文件
@@ -249,9 +307,9 @@ filename       # 完整同步成功后的正式文件
 4. 将剩余内容追加写入 `.part`。
 5. `.part` 大小达到源文件大小后重命名为正式文件。
 
-### S3/MinIO 目标
+### S3 兼容对象存储目标
 
-S3/MinIO 使用标准 Multipart Upload：
+S3、MinIO、OSS、COS、OBS 等 S3 兼容对象存储使用标准 Multipart Upload：
 
 1. 后端创建 Multipart Upload，获得 `uploadId`。
 2. 按分片上传文件内容。
@@ -266,13 +324,22 @@ s3_multipart_upload
 s3_multipart_part
 ```
 
+### WebDAV/HTTP 目标
+
+- WebDAV 标准协议没有通用的追加写入语义，当前实现采用重新 PUT `.part` 文件并在完成后 MOVE 为正式文件。
+- HTTP 自定义上传接口无法统一判断服务端已接收字节数，当前实现按文件完整上传，不做通用断点续传。
+- 如果业务需要 HTTP 断点续传，需要目标接口额外提供分片上传、分片查询和合并协议。
+
 ## 注意事项
 
 - 源 SFTP 路径和目标 SFTP 路径均建议填写绝对路径。
 - 如果使用 root 用户，后端会自动将绝对路径换算为 Camel 可消费的相对目录，避免错误落到 `/root` 下。
 - `并发文件数` 控制的是同时传输的文件数量，不限制目标目录中 `.part` 文件的数量。
 - `.part` 文件表示未完成或待续传文件，不建议手动删除，除非确认要重新传输。
-- S3/MinIO 目标不使用 `.part` 对象，而是使用 Multipart Upload 状态表续传。
+- S3 兼容对象存储目标不使用 `.part` 对象，而是使用 Multipart Upload 状态表续传。
+- SMB/NAS 目标路径是共享名下的相对路径，不需要填写 Windows 盘符。
+- WebDAV 目标依赖服务端支持 `PUT`、`MKCOL`、`MOVE`、`DELETE`、`HEAD` 方法。
+- HTTP 目标要求服务端支持 `multipart/form-data` 文件上传。
 - 总传输限速是全局限速，所有并发文件共享该速度。
 - 大文件同步时，请确保目标磁盘或对象存储空间充足。
 
@@ -294,9 +361,13 @@ bigfile-sftp-backend/db/bigfile-sftp.mv.db
 
 并发文件数限制的是同时传输的文件数量，不是 `.part` 文件总数。多个 `.part` 表示多个文件曾经开始同步但尚未完成。
 
-### S3/MinIO 同步中断后会重新上传吗？
+### S3 兼容对象存储同步中断后会重新上传吗？
 
 不会从头上传已完成分片。后端会从 H2 表中读取已上传分片，继续上传未完成分片。
+
+### WebDAV 和 HTTP 支持断点续传吗？
+
+WebDAV 当前支持临时文件和完成后重命名，但不支持通用 offset 追加续传；HTTP 上传接口当前按完整文件上传，是否支持断点续传取决于目标接口是否额外提供分片协议。
 
 ### 控制台出现 known_hosts 日志正常吗？
 

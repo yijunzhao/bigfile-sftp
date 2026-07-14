@@ -32,7 +32,7 @@ public class SftpConfigService {
     public SftpConfigResponse getConfig() {
         return repository.findById(SINGLE_CONFIG_ID)
                 .map(this::toResponse)
-                .orElse(new SftpConfigResponse("", 22, "", "", "", null, 1, "LOCAL", "", "", 22, "", "", "", "", "", "", "", "", "us-east-1", true));
+                .orElse(new SftpConfigResponse("", 22, "", "", "", null, 1, "LOCAL", "", "", 22, "", "", "", "", "", "", "", "", "us-east-1", true, "", "", "", "", "", "", "", "", "", "", "", "POST", "", "", "file", "path"));
     }
 
     /**
@@ -67,6 +67,22 @@ public class SftpConfigService {
         config.setTargetS3Prefix(trimToEmpty(request.targetS3Prefix()));
         config.setTargetS3Region(trimToEmpty(request.targetS3Region()).isBlank() ? "us-east-1" : trimToEmpty(request.targetS3Region()));
         config.setTargetS3PathStyleAccess(request.targetS3PathStyleAccess() == null || request.targetS3PathStyleAccess());
+        config.setTargetSmbHost(trimToEmpty(request.targetSmbHost()));
+        config.setTargetSmbShare(trimToEmpty(request.targetSmbShare()));
+        config.setTargetSmbDomain(trimToEmpty(request.targetSmbDomain()));
+        config.setTargetSmbUsername(trimToEmpty(request.targetSmbUsername()));
+        config.setTargetSmbPassword(request.targetSmbPassword());
+        config.setTargetSmbPath(trimToEmpty(request.targetSmbPath()));
+        config.setTargetWebdavBaseUrl(trimToEmpty(request.targetWebdavBaseUrl()));
+        config.setTargetWebdavUsername(trimToEmpty(request.targetWebdavUsername()));
+        config.setTargetWebdavPassword(request.targetWebdavPassword());
+        config.setTargetWebdavPath(trimToEmpty(request.targetWebdavPath()));
+        config.setTargetHttpUrl(trimToEmpty(request.targetHttpUrl()));
+        config.setTargetHttpMethod(trimToEmpty(request.targetHttpMethod()).isBlank() ? "POST" : trimToEmpty(request.targetHttpMethod()).toUpperCase());
+        config.setTargetHttpUsername(trimToEmpty(request.targetHttpUsername()));
+        config.setTargetHttpPassword(request.targetHttpPassword());
+        config.setTargetHttpFileField(trimToEmpty(request.targetHttpFileField()).isBlank() ? "file" : trimToEmpty(request.targetHttpFileField()));
+        config.setTargetHttpPathParam(trimToEmpty(request.targetHttpPathParam()).isBlank() ? "path" : trimToEmpty(request.targetHttpPathParam()));
         return toResponse(repository.save(config));
     }
 
@@ -86,6 +102,24 @@ public class SftpConfigService {
             requireText(request.targetS3AccessKey(), "S3 Access Key不能为空");
             requireText(request.targetS3SecretKey(), "S3 Secret Key不能为空");
             requireText(request.targetS3Bucket(), "S3 Bucket不能为空");
+            return;
+        }
+
+        if ("SMB".equals(request.targetType())) {
+            requireText(request.targetSmbHost(), "SMB服务器地址不能为空");
+            requireText(request.targetSmbShare(), "SMB共享名不能为空");
+            requireText(request.targetSmbUsername(), "SMB用户名不能为空");
+            requireText(request.targetSmbPassword(), "SMB密码不能为空");
+            return;
+        }
+
+        if ("WEBDAV".equals(request.targetType())) {
+            requireText(request.targetWebdavBaseUrl(), "WebDAV基础地址不能为空");
+            return;
+        }
+
+        if ("HTTP".equals(request.targetType())) {
+            requireText(request.targetHttpUrl(), "HTTP上传地址不能为空");
             return;
         }
 
@@ -129,7 +163,23 @@ public class SftpConfigService {
                 config.getTargetS3Bucket() == null ? "" : config.getTargetS3Bucket(),
                 config.getTargetS3Prefix() == null ? "" : config.getTargetS3Prefix(),
                 config.getTargetS3Region() == null ? "us-east-1" : config.getTargetS3Region(),
-                config.getTargetS3PathStyleAccess() == null || config.getTargetS3PathStyleAccess()
+                config.getTargetS3PathStyleAccess() == null || config.getTargetS3PathStyleAccess(),
+                config.getTargetSmbHost() == null ? "" : config.getTargetSmbHost(),
+                config.getTargetSmbShare() == null ? "" : config.getTargetSmbShare(),
+                config.getTargetSmbDomain() == null ? "" : config.getTargetSmbDomain(),
+                config.getTargetSmbUsername() == null ? "" : config.getTargetSmbUsername(),
+                config.getTargetSmbPassword() == null ? "" : config.getTargetSmbPassword(),
+                config.getTargetSmbPath() == null ? "" : config.getTargetSmbPath(),
+                config.getTargetWebdavBaseUrl() == null ? "" : config.getTargetWebdavBaseUrl(),
+                config.getTargetWebdavUsername() == null ? "" : config.getTargetWebdavUsername(),
+                config.getTargetWebdavPassword() == null ? "" : config.getTargetWebdavPassword(),
+                config.getTargetWebdavPath() == null ? "" : config.getTargetWebdavPath(),
+                config.getTargetHttpUrl() == null ? "" : config.getTargetHttpUrl(),
+                config.getTargetHttpMethod() == null ? "POST" : config.getTargetHttpMethod(),
+                config.getTargetHttpUsername() == null ? "" : config.getTargetHttpUsername(),
+                config.getTargetHttpPassword() == null ? "" : config.getTargetHttpPassword(),
+                config.getTargetHttpFileField() == null ? "file" : config.getTargetHttpFileField(),
+                config.getTargetHttpPathParam() == null ? "path" : config.getTargetHttpPathParam()
         );
     }
 

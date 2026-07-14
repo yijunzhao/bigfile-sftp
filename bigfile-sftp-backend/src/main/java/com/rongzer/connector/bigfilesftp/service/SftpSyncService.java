@@ -9,6 +9,16 @@ import com.rongzer.connector.bigfilesftp.repository.S3MultipartUploadRepository;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.Session;
+import com.hierynomus.msdtyp.AccessMask;
+import com.hierynomus.msfscc.FileAttributes;
+import com.hierynomus.mssmb2.SMB2CreateDisposition;
+import com.hierynomus.mssmb2.SMB2CreateOptions;
+import com.hierynomus.mssmb2.SMB2ShareAccess;
+import com.hierynomus.smbj.SMBClient;
+import com.hierynomus.smbj.auth.AuthenticationContext;
+import com.hierynomus.smbj.connection.Connection;
+import com.hierynomus.smbj.share.DiskShare;
+import com.hierynomus.smbj.share.File;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.NotifyBuilder;
@@ -20,8 +30,12 @@ import org.springframework.stereotype.Service;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -29,10 +43,14 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
+import java.util.Enumeration;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.ExecutorService;
@@ -135,7 +153,7 @@ public class SftpSyncService {
         List<Future<?>> futures = new ArrayList<>();
 
         for (SourceFile sourceFile : remoteScan.files()) {
-            if (skipOrPromoteCompletedFile(syncTarget.writer(), sourceFile, files)) {
+            if (syncTarget.writer() != null && skipOrPromoteCompletedFile(syncTarget.writer(), sourceFile, files)) {
                 continue;
             }
             futures.add(executorService.submit(() -> {
@@ -236,6 +254,9 @@ public class SftpSyncService {
      * @throws Exception 续传异常
      */
     private boolean resumeDirectlyFromSourceOffset(SftpConfigRequest request, TargetWriter targetWriter, SourceFile sourceFile, BandwidthLimiter bandwidthLimiter) throws Exception {
+        if (!targetWriter.supportsAppendResume()) {
+            return false;
+        }
         if (sourceFile.size() <= 0) {
             return false;
         }
@@ -415,7 +436,7 @@ public class SftpSyncService {
                         .noStreamCaching()
                         .autoStartup(false)
                         .process(exchange -> prepareResumableTransfer(exchange, syncTarget.writer(), bandwidthLimiter, files))
-                        .to(syncTarget.uri())
+                        .process(exchange -> writeExchangeToTarget(exchange, syncTarget.writer()))
                         .process(exchange -> completeResumableTransfer(exchange, syncTarget.writer(), files));
             }
         });
@@ -436,6 +457,25 @@ public class SftpSyncService {
             camelContext.getRouteController().stopRoute(routeId, 10, TimeUnit.SECONDS);
             camelContext.removeRoute(routeId);
         }
+    }
+
+    /**
+     * 将 Camel 获取到的源文件流写入目标端临时文件。
+     *
+     * @param exchange 当前 Camel 交换对象
+     * @param targetWriter 目标端文件操作器
+     * @throws Exception 读取或写入异常
+     */
+    private void writeExchangeToTarget(Exchange exchange, TargetWriter targetWriter) throws Exception {
+        String fileName = exchange.getProperty("finalFileName", String.class);
+        if (fileName == null || fileName.isBlank()) {
+            return;
+        }
+        InputStream inputStream = exchange.getMessage().getBody(InputStream.class);
+        if (inputStream == null) {
+            throw new IOException("源文件流为空: " + fileName);
+        }
+        targetWriter.appendToTemporary(fileName, inputStream);
     }
 
     /**
@@ -560,9 +600,66 @@ public class SftpSyncService {
             return new SyncTarget("s3://" + s3Target.bucket() + "/" + s3Target.prefix(), s3Target.bucket() + "/" + s3Target.prefix(), null, s3Target);
         }
 
+        if ("SMB".equals(request.targetType())) {
+            String rootPath = normalizeRemoteRelativePath(request.targetSmbPath());
+            String displayPath = "smb://" + request.targetSmbHost().trim() + "/" + request.targetSmbShare().trim() + (rootPath.isBlank() ? "" : "/" + rootPath);
+            return new SyncTarget(
+                    displayPath,
+                    displayPath,
+                    new SmbTargetWriter(
+                            request.targetSmbHost().trim(),
+                            request.targetSmbShare().trim(),
+                            trimToEmpty(request.targetSmbDomain()),
+                            request.targetSmbUsername().trim(),
+                            request.targetSmbPassword(),
+                            rootPath
+                    ),
+                    null
+            );
+        }
+
+        if ("WEBDAV".equals(request.targetType())) {
+            WebdavTargetWriter writer = new WebdavTargetWriter(
+                    request.targetWebdavBaseUrl().trim(),
+                    trimToEmpty(request.targetWebdavUsername()),
+                    request.targetWebdavPassword(),
+                    normalizeRemoteRelativePath(request.targetWebdavPath())
+            );
+            return new SyncTarget(writer.displayUri(), writer.displayUri(), writer, null);
+        }
+
+        if ("HTTP".equals(request.targetType())) {
+            HttpUploadTargetWriter writer = new HttpUploadTargetWriter(
+                    request.targetHttpUrl().trim(),
+                    trimToEmpty(request.targetHttpMethod()).isBlank() ? "POST" : request.targetHttpMethod().trim().toUpperCase(),
+                    trimToEmpty(request.targetHttpUsername()),
+                    request.targetHttpPassword(),
+                    trimToEmpty(request.targetHttpFileField()).isBlank() ? "file" : request.targetHttpFileField().trim(),
+                    trimToEmpty(request.targetHttpPathParam()).isBlank() ? "path" : request.targetHttpPathParam().trim()
+            );
+            return new SyncTarget(writer.displayUri(), writer.displayUri(), writer, null);
+        }
+
         Path targetDirectory = Path.of(request.syncPath().trim()).toAbsolutePath().normalize();
         Files.createDirectories(targetDirectory);
         return new SyncTarget(buildFileUri(targetDirectory), targetDirectory.toString(), new LocalTargetWriter(targetDirectory), null);
+    }
+
+    /**
+     * 将可选远程目录规范化为不带开头斜杠的相对路径。
+     */
+    private String normalizeRemoteRelativePath(String path) {
+        if (path == null || path.isBlank()) {
+            return "";
+        }
+        return path.trim().replace('\\', '/').replaceAll("^/+", "").replaceAll("/+$", "");
+    }
+
+    /**
+     * 将可选字符串转换为非空字符串。
+     */
+    private String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
     }
 
     /**
@@ -609,7 +706,7 @@ public class SftpSyncService {
             return;
         }
 
-        if (sourceSize > 0 && finalSize > 0 && finalSize < sourceSize && temporarySize == 0) {
+        if (sourceSize > 0 && targetWriter.supportsAppendResume() && finalSize > 0 && finalSize < sourceSize && temporarySize == 0) {
             targetWriter.moveFinalToTemporary(fileName);
             temporarySize = finalSize;
         }
@@ -622,8 +719,10 @@ public class SftpSyncService {
         }
 
         InputStream inputStream = exchange.getMessage().getBody(InputStream.class);
-        if (inputStream != null && temporarySize > 0) {
+        if (inputStream != null && temporarySize > 0 && targetWriter.supportsAppendResume()) {
             skipFully(inputStream, temporarySize);
+        } else if (!targetWriter.supportsAppendResume()) {
+            temporarySize = 0L;
         }
         if (inputStream != null) {
             exchange.getMessage().setBody(inputStream);
@@ -916,6 +1015,10 @@ public class SftpSyncService {
         void promoteTemporaryToFinal(String fileName) throws Exception;
 
         void appendToTemporary(String fileName, InputStream inputStream) throws Exception;
+
+        default boolean supportsAppendResume() {
+            return true;
+        }
     }
 
     /**
@@ -1083,6 +1186,530 @@ public class SftpSyncService {
 
         private String remoteFilePath(String fileName) {
             return rootPath + "/" + fileName.replace('\\', '/').replaceAll("^/+", "");
+        }
+    }
+
+    /**
+     * SMB/NAS 共享目录目标端操作器。
+     */
+    private static class SmbTargetWriter implements TargetWriter {
+
+        private final String host;
+        private final String shareName;
+        private final String domain;
+        private final String username;
+        private final String password;
+        private final String rootPath;
+
+        private SmbTargetWriter(String host, String shareName, String domain, String username, String password, String rootPath) {
+            this.host = host;
+            this.shareName = shareName;
+            this.domain = domain;
+            this.username = username;
+            this.password = password;
+            this.rootPath = normalizeSmbPath(rootPath);
+        }
+
+        @Override
+        public String temporaryFileName(String fileName) {
+            return fileName + ".part";
+        }
+
+        @Override
+        public long finalSize(String fileName) throws Exception {
+            try (SmbConnection connection = connect()) {
+                return size(connection.share(), smbFilePath(fileName));
+            }
+        }
+
+        @Override
+        public long temporarySize(String fileName) throws Exception {
+            try (SmbConnection connection = connect()) {
+                return size(connection.share(), smbFilePath(temporaryFileName(fileName)));
+            }
+        }
+
+        @Override
+        public void moveFinalToTemporary(String fileName) throws Exception {
+            try (SmbConnection connection = connect()) {
+                String finalPath = smbFilePath(fileName);
+                String temporaryPath = smbFilePath(temporaryFileName(fileName));
+                ensureParentDirectories(connection.share(), temporaryPath);
+                removeIfExists(connection.share(), temporaryPath);
+                rename(connection.share(), finalPath, temporaryPath);
+            }
+        }
+
+        @Override
+        public void promoteTemporaryToFinal(String fileName) throws Exception {
+            try (SmbConnection connection = connect()) {
+                String finalPath = smbFilePath(fileName);
+                String temporaryPath = smbFilePath(temporaryFileName(fileName));
+                ensureParentDirectories(connection.share(), finalPath);
+                removeIfExists(connection.share(), finalPath);
+                rename(connection.share(), temporaryPath, finalPath);
+            }
+        }
+
+        @Override
+        public void appendToTemporary(String fileName, InputStream inputStream) throws Exception {
+            try (SmbConnection connection = connect()) {
+                String temporaryPath = smbFilePath(temporaryFileName(fileName));
+                ensureParentDirectories(connection.share(), temporaryPath);
+                long offset = size(connection.share(), temporaryPath);
+                try (File file = openWritableFile(connection.share(), temporaryPath)) {
+                    byte[] buffer = new byte[1024 * 1024];
+                    int count;
+                    while ((count = inputStream.read(buffer)) != -1) {
+                        file.write(buffer, offset, 0, count);
+                        offset += count;
+                    }
+                }
+            }
+        }
+
+        private SmbConnection connect() throws IOException {
+            SMBClient client = new SMBClient();
+            Connection connection = client.connect(host);
+            AuthenticationContext authenticationContext = new AuthenticationContext(username, password.toCharArray(), domain);
+            com.hierynomus.smbj.session.Session session = connection.authenticate(authenticationContext);
+            DiskShare share = (DiskShare) session.connectShare(shareName);
+            return new SmbConnection(client, connection, session, share);
+        }
+
+        private File openWritableFile(DiskShare share, String path) {
+            return share.openFile(
+                    path,
+                    EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.FILE_READ_ATTRIBUTES),
+                    EnumSet.of(FileAttributes.FILE_ATTRIBUTE_NORMAL),
+                    SMB2ShareAccess.ALL,
+                    SMB2CreateDisposition.FILE_OPEN_IF,
+                    EnumSet.of(SMB2CreateOptions.FILE_NON_DIRECTORY_FILE)
+            );
+        }
+
+        private void rename(DiskShare share, String sourcePath, String targetPath) {
+            try (File file = share.openFile(
+                    sourcePath,
+                    EnumSet.of(AccessMask.DELETE, AccessMask.FILE_READ_ATTRIBUTES),
+                    EnumSet.of(FileAttributes.FILE_ATTRIBUTE_NORMAL),
+                    SMB2ShareAccess.ALL,
+                    SMB2CreateDisposition.FILE_OPEN,
+                    EnumSet.of(SMB2CreateOptions.FILE_NON_DIRECTORY_FILE)
+            )) {
+                file.rename(targetPath, true);
+            }
+        }
+
+        private long size(DiskShare share, String path) {
+            try {
+                if (!share.fileExists(path)) {
+                    return 0L;
+                }
+                return share.getFileInformation(path).getStandardInformation().getEndOfFile();
+            } catch (Exception exception) {
+                return 0L;
+            }
+        }
+
+        private void removeIfExists(DiskShare share, String path) {
+            try {
+                if (share.fileExists(path)) {
+                    share.rm(path);
+                }
+            } catch (Exception exception) {
+                throw new IllegalStateException("删除SMB文件失败: " + path, exception);
+            }
+        }
+
+        private void ensureParentDirectories(DiskShare share, String filePath) {
+            String parentPath = parentPath(filePath);
+            if (parentPath.isBlank()) {
+                return;
+            }
+            StringBuilder currentPath = new StringBuilder();
+            for (String segment : parentPath.split("\\\\+")) {
+                if (segment.isBlank()) {
+                    continue;
+                }
+                if (!currentPath.isEmpty()) {
+                    currentPath.append('\\');
+                }
+                currentPath.append(segment);
+                String directory = currentPath.toString();
+                if (!share.folderExists(directory)) {
+                    share.mkdir(directory);
+                }
+            }
+        }
+
+        private String smbFilePath(String fileName) {
+            String relativePath = normalizeSmbPath(fileName);
+            return rootPath.isBlank() ? relativePath : rootPath + "\\" + relativePath;
+        }
+
+        private String parentPath(String path) {
+            int lastSeparator = path.lastIndexOf('\\');
+            return lastSeparator < 0 ? "" : path.substring(0, lastSeparator);
+        }
+
+        private static String normalizeSmbPath(String path) {
+            if (path == null || path.isBlank()) {
+                return "";
+            }
+            return path.trim().replace('/', '\\').replaceAll("^\\\\+", "").replaceAll("\\\\+$", "");
+        }
+    }
+
+    /**
+     * WebDAV 目标端操作器。
+     */
+    private static class WebdavTargetWriter implements TargetWriter {
+
+        private final HttpClient httpClient = HttpClient.newHttpClient();
+        private final String baseUrl;
+        private final String username;
+        private final String password;
+        private final String rootPath;
+
+        private WebdavTargetWriter(String baseUrl, String username, String password, String rootPath) {
+            this.baseUrl = baseUrl.replaceAll("/+$", "");
+            this.username = username;
+            this.password = password;
+            this.rootPath = rootPath;
+        }
+
+        @Override
+        public String temporaryFileName(String fileName) {
+            return fileName + ".part";
+        }
+
+        @Override
+        public long finalSize(String fileName) throws Exception {
+            return contentLength(fileUri(fileName));
+        }
+
+        @Override
+        public long temporarySize(String fileName) throws Exception {
+            return contentLength(fileUri(temporaryFileName(fileName)));
+        }
+
+        @Override
+        public void moveFinalToTemporary(String fileName) throws Exception {
+            deleteIfExists(fileUri(temporaryFileName(fileName)));
+            move(fileUri(fileName), fileUri(temporaryFileName(fileName)));
+        }
+
+        @Override
+        public void promoteTemporaryToFinal(String fileName) throws Exception {
+            deleteIfExists(fileUri(fileName));
+            move(fileUri(temporaryFileName(fileName)), fileUri(fileName));
+        }
+
+        @Override
+        public void appendToTemporary(String fileName, InputStream inputStream) throws Exception {
+            ensureDirectories(fileName);
+            HttpRequest request = withAuthorization(HttpRequest.newBuilder(fileUri(temporaryFileName(fileName))))
+                    .PUT(HttpRequest.BodyPublishers.ofInputStream(() -> inputStream))
+                    .build();
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            requireSuccess(response.statusCode(), "WebDAV上传失败");
+        }
+
+        @Override
+        public boolean supportsAppendResume() {
+            return false;
+        }
+
+        private String displayUri() {
+            return baseUrl + (rootPath.isBlank() ? "" : "/" + rootPath);
+        }
+
+        private long contentLength(URI uri) throws Exception {
+            HttpRequest request = withAuthorization(HttpRequest.newBuilder(uri)).method("HEAD", HttpRequest.BodyPublishers.noBody()).build();
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() == 404) {
+                return 0L;
+            }
+            requireSuccess(response.statusCode(), "WebDAV读取文件大小失败");
+            return response.headers().firstValueAsLong("Content-Length").orElse(0L);
+        }
+
+        private void ensureDirectories(String fileName) throws Exception {
+            String directoryPath = webdavParentDirectory(rootPath.isBlank() ? fileName : rootPath + "/" + fileName);
+            if (directoryPath.isBlank()) {
+                return;
+            }
+            StringBuilder currentPath = new StringBuilder();
+            for (String segment : directoryPath.split("/+")) {
+                if (segment.isBlank()) {
+                    continue;
+                }
+                if (!currentPath.isEmpty()) {
+                    currentPath.append('/');
+                }
+                currentPath.append(segment);
+                mkcol(directoryUri(currentPath.toString()));
+            }
+        }
+
+        private void mkcol(URI uri) throws Exception {
+            HttpRequest request = withAuthorization(HttpRequest.newBuilder(uri)).method("MKCOL", HttpRequest.BodyPublishers.noBody()).build();
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() != 201 && response.statusCode() != 405) {
+                requireSuccess(response.statusCode(), "WebDAV创建目录失败");
+            }
+        }
+
+        private void deleteIfExists(URI uri) throws Exception {
+            HttpRequest request = withAuthorization(HttpRequest.newBuilder(uri)).DELETE().build();
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() != 404 && response.statusCode() >= 400) {
+                throw new IOException("WebDAV删除文件失败，HTTP状态码=" + response.statusCode());
+            }
+        }
+
+        private void move(URI sourceUri, URI targetUri) throws Exception {
+            HttpRequest request = withAuthorization(HttpRequest.newBuilder(sourceUri))
+                    .header("Destination", targetUri.toString())
+                    .header("Overwrite", "T")
+                    .method("MOVE", HttpRequest.BodyPublishers.noBody())
+                    .build();
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            requireSuccess(response.statusCode(), "WebDAV重命名文件失败");
+        }
+
+        private URI fileUri(String fileName) {
+            String relativePath = rootPath.isBlank() ? fileName : rootPath + "/" + fileName;
+            return directoryUri(relativePath);
+        }
+
+        private URI directoryUri(String relativePath) {
+            return URI.create(baseUrl + "/" + encodeRelativePath(relativePath));
+        }
+
+        private HttpRequest.Builder withAuthorization(HttpRequest.Builder builder) {
+            if (username == null || username.isBlank()) {
+                return builder;
+            }
+            String token = Base64.getEncoder().encodeToString((username + ":" + Objects.toString(password, "")).getBytes(StandardCharsets.UTF_8));
+            return builder.header("Authorization", "Basic " + token);
+        }
+    }
+
+    /**
+     * HTTP 自定义上传接口目标端操作器。
+     */
+    private static class HttpUploadTargetWriter implements TargetWriter {
+
+        private final HttpClient httpClient = HttpClient.newHttpClient();
+        private final String url;
+        private final String method;
+        private final String username;
+        private final String password;
+        private final String fileField;
+        private final String pathParam;
+
+        private HttpUploadTargetWriter(String url, String method, String username, String password, String fileField, String pathParam) {
+            this.url = url;
+            this.method = method;
+            this.username = username;
+            this.password = password;
+            this.fileField = fileField;
+            this.pathParam = pathParam;
+        }
+
+        @Override
+        public String temporaryFileName(String fileName) {
+            return fileName;
+        }
+
+        @Override
+        public long finalSize(String fileName) {
+            return 0L;
+        }
+
+        @Override
+        public long temporarySize(String fileName) {
+            return 0L;
+        }
+
+        @Override
+        public void moveFinalToTemporary(String fileName) {
+        }
+
+        @Override
+        public void promoteTemporaryToFinal(String fileName) {
+        }
+
+        @Override
+        public void appendToTemporary(String fileName, InputStream inputStream) throws Exception {
+            String boundary = "----bigfile-sftp-" + UUID.randomUUID();
+            HttpRequest.BodyPublisher bodyPublisher = multipartBodyPublisher(boundary, fileName, inputStream);
+            HttpRequest request = withAuthorization(HttpRequest.newBuilder(URI.create(url)))
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                    .method(method, bodyPublisher)
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IOException("HTTP上传失败，HTTP状态码=" + response.statusCode() + "，响应=" + response.body());
+            }
+        }
+
+        @Override
+        public boolean supportsAppendResume() {
+            return false;
+        }
+
+        private String displayUri() {
+            return url;
+        }
+
+        private HttpRequest.BodyPublisher multipartBodyPublisher(String boundary, String fileName, InputStream inputStream) {
+            byte[] prefix = ("--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"" + pathParam + "\"\r\n\r\n"
+                    + fileName + "\r\n"
+                    + "--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"" + fileField + "\"; filename=\"" + baseName(fileName) + "\"\r\n"
+                    + "Content-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8);
+            byte[] suffix = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8);
+            return HttpRequest.BodyPublishers.ofInputStream(() -> new MultipartInputStream(prefix, inputStream, suffix));
+        }
+
+        private String baseName(String fileName) {
+            int index = fileName.lastIndexOf('/');
+            return index < 0 ? fileName : fileName.substring(index + 1);
+        }
+
+        private HttpRequest.Builder withAuthorization(HttpRequest.Builder builder) {
+            if (username == null || username.isBlank()) {
+                return builder;
+            }
+            String token = Base64.getEncoder().encodeToString((username + ":" + Objects.toString(password, "")).getBytes(StandardCharsets.UTF_8));
+            return builder.header("Authorization", "Basic " + token);
+        }
+    }
+
+    /**
+     * SMB 连接资源封装。
+     */
+    private record SmbConnection(SMBClient client, Connection connection, com.hierynomus.smbj.session.Session session, DiskShare share) implements AutoCloseable {
+
+        @Override
+        public void close() throws IOException {
+            IOException closeException = null;
+            closeException = closeResource(share, closeException);
+            closeException = closeResource(session, closeException);
+            closeException = closeResource(connection, closeException);
+            closeException = closeResource(client, closeException);
+            if (closeException != null) {
+                throw closeException;
+            }
+        }
+
+        private IOException closeResource(AutoCloseable resource, IOException closeException) {
+            if (resource == null) {
+                return closeException;
+            }
+            try {
+                resource.close();
+            } catch (Exception exception) {
+                if (closeException == null) {
+                    return exception instanceof IOException ioException ? ioException : new IOException(exception);
+                }
+                closeException.addSuppressed(exception);
+            }
+            return closeException;
+        }
+    }
+
+    /**
+     * 组合 multipart 前缀、文件流和后缀的输入流。
+     */
+    private static class MultipartInputStream extends InputStream {
+
+        private final List<InputStream> streams;
+        private int currentIndex;
+
+        private MultipartInputStream(byte[] prefix, InputStream fileStream, byte[] suffix) {
+            this.streams = List.of(new java.io.ByteArrayInputStream(prefix), fileStream, new java.io.ByteArrayInputStream(suffix));
+        }
+
+        @Override
+        public int read() throws IOException {
+            while (currentIndex < streams.size()) {
+                int value = streams.get(currentIndex).read();
+                if (value != -1) {
+                    return value;
+                }
+                currentIndex++;
+            }
+            return -1;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            while (currentIndex < streams.size()) {
+                int count = streams.get(currentIndex).read(buffer, offset, length);
+                if (count != -1) {
+                    return count;
+                }
+                currentIndex++;
+            }
+            return -1;
+        }
+
+        @Override
+        public void close() throws IOException {
+            IOException closeException = null;
+            for (InputStream stream : streams) {
+                try {
+                    stream.close();
+                } catch (IOException exception) {
+                    if (closeException == null) {
+                        closeException = exception;
+                    } else {
+                        closeException.addSuppressed(exception);
+                    }
+                }
+            }
+            if (closeException != null) {
+                throw closeException;
+            }
+        }
+    }
+
+    /**
+     * 编码相对 URL 路径，保留目录分隔符。
+     */
+    private static String encodeRelativePath(String path) {
+        String[] segments = path.replace('\\', '/').replaceAll("^/+", "").split("/", -1);
+        StringBuilder builder = new StringBuilder();
+        for (int index = 0; index < segments.length; index++) {
+            if (index > 0) {
+                builder.append('/');
+            }
+            if (!segments[index].isBlank()) {
+                builder.append(URLEncoder.encode(segments[index], StandardCharsets.UTF_8).replace("+", "%20"));
+            }
+        }
+        return builder.toString();
+    }
+
+    /**
+     * 提取相对路径的父目录。
+     */
+    private static String webdavParentDirectory(String fileName) {
+        int lastSeparator = fileName.lastIndexOf('/');
+        return lastSeparator < 0 ? "" : fileName.substring(0, lastSeparator);
+    }
+
+    /**
+     * 校验 HTTP 状态码是否表示成功。
+     */
+    private static void requireSuccess(int statusCode, String message) throws IOException {
+        if (statusCode < 200 || statusCode >= 300) {
+            throw new IOException(message + "，HTTP状态码=" + statusCode);
         }
     }
 

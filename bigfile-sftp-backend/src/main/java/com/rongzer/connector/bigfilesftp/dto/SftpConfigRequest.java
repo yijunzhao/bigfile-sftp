@@ -19,7 +19,7 @@ import java.math.BigDecimal;
  * @param sftpPath 源 SFTP 绝对文件路径
  * @param bandwidthLimitMbps 总传输限速，单位 MB/s，为空表示不限速
  * @param parallelCount 并发同步文件数
- * @param targetType 同步目标类型，LOCAL 表示本地路径，SFTP 表示远程 SFTP 服务
+ * @param targetType 同步目标类型，支持 LOCAL、SFTP、S3、SMB、WEBDAV、HTTP
  * @param syncPath 本地文件同步路径
  * @param targetHost 目标 SFTP 服务器地址
  * @param targetPort 目标 SFTP 服务器端口
@@ -58,7 +58,7 @@ public record SftpConfigRequest(
         Integer parallelCount,
 
         @NotBlank(message = "目标类型不能为空")
-        @Pattern(regexp = "LOCAL|SFTP|S3", message = "目标类型只能是LOCAL、SFTP或S3")
+        @Pattern(regexp = "LOCAL|SFTP|S3|SMB|WEBDAV|HTTP", message = "目标类型只能是LOCAL、SFTP、S3、SMB、WEBDAV或HTTP")
         String targetType,
 
         @Size(max = 255, message = "文件同步路径最长255字符")
@@ -98,6 +98,25 @@ public record SftpConfigRequest(
         @Size(max = 50, message = "S3 Region最长50字符")
         String targetS3Region,
 
-        Boolean targetS3PathStyleAccess
+        Boolean targetS3PathStyleAccess,
+
+        String targetSmbHost,
+        String targetSmbShare,
+        String targetSmbDomain,
+        String targetSmbUsername,
+        String targetSmbPassword,
+        String targetSmbPath,
+
+        String targetWebdavBaseUrl,
+        String targetWebdavUsername,
+        String targetWebdavPassword,
+        String targetWebdavPath,
+
+        String targetHttpUrl,
+        String targetHttpMethod,
+        String targetHttpUsername,
+        String targetHttpPassword,
+        String targetHttpFileField,
+        String targetHttpPathParam
 ) {
 }

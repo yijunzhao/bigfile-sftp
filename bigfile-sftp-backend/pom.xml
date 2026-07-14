@@ -20,6 +20,7 @@
         <java.version>17</java.version>
         <camel.version>4.21.0</camel.version>
         <aws.sdk.version>2.47.6</aws.sdk.version>
+        <smbj.version>0.14.0</smbj.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -91,6 +92,11 @@
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>url-connection-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.hierynomus</groupId>
+            <artifactId>smbj</artifactId>
+            <version>${smbj.version}</version>
         </dependency>
     </dependencies>
 
