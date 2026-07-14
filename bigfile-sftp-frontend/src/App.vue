@@ -210,7 +210,7 @@ async function request(url, options = {}) {
       <div class="header">
         <p class="eyebrow">Bigfile SFTP</p>
         <h1>SFTP 文件同步配置</h1>
-        <p class="description">保存 SFTP 连接信息，并通过 Apache Camel 将远端文件同步到本地路径或指定的远程SFTP服务器。</p>
+        <p class="description">保存 SFTP 连接信息，并通过 Apache Camel 将远端文件同步到本地路径或指定的远程文件系统。</p>
       </div>
 
       <form class="form" @submit.prevent="saveConfig">
