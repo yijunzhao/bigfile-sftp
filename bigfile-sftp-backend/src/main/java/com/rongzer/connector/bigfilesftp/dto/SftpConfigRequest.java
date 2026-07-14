@@ -58,7 +58,7 @@ public record SftpConfigRequest(
         Integer parallelCount,
 
         @NotBlank(message = "目标类型不能为空")
-        @Pattern(regexp = "LOCAL|SFTP", message = "目标类型只能是LOCAL或SFTP")
+        @Pattern(regexp = "LOCAL|SFTP|S3", message = "目标类型只能是LOCAL、SFTP或S3")
         String targetType,
 
         @Size(max = 255, message = "文件同步路径最长255字符")
@@ -78,6 +78,26 @@ public record SftpConfigRequest(
         String targetPassword,
 
         @Size(max = 255, message = "目标SFTP文件路径最长255字符")
-        String targetPath
+        String targetPath,
+
+        @Size(max = 255, message = "S3 Endpoint最长255字符")
+        String targetS3Endpoint,
+
+        @Size(max = 100, message = "S3 Access Key最长100字符")
+        String targetS3AccessKey,
+
+        @Size(max = 100, message = "S3 Secret Key最长100字符")
+        String targetS3SecretKey,
+
+        @Size(max = 100, message = "S3 Bucket最长100字符")
+        String targetS3Bucket,
+
+        @Size(max = 255, message = "S3对象前缀最长255字符")
+        String targetS3Prefix,
+
+        @Size(max = 50, message = "S3 Region最长50字符")
+        String targetS3Region,
+
+        Boolean targetS3PathStyleAccess
 ) {
 }

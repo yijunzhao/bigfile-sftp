@@ -48,6 +48,20 @@ public class SftpConfig {
     private String targetPassword;
     @Column(name = "target_path", length = 255)
     private String targetPath;
+    @Column(name = "target_s3_endpoint", length = 255)
+    private String targetS3Endpoint;
+    @Column(name = "target_s3_access_key", length = 100)
+    private String targetS3AccessKey;
+    @Column(name = "target_s3_secret_key", length = 100)
+    private String targetS3SecretKey;
+    @Column(name = "target_s3_bucket", length = 100)
+    private String targetS3Bucket;
+    @Column(name = "target_s3_prefix", length = 255)
+    private String targetS3Prefix;
+    @Column(name = "target_s3_region", length = 50)
+    private String targetS3Region;
+    @Column(name = "target_s3_path_style_access")
+    private Boolean targetS3PathStyleAccess;
 
     public Long getId() {
         return id;
@@ -167,5 +181,61 @@ public class SftpConfig {
 
     public void setTargetPath(String targetPath) {
         this.targetPath = targetPath;
+    }
+
+    public String getTargetS3Endpoint() {
+        return targetS3Endpoint;
+    }
+
+    public void setTargetS3Endpoint(String targetS3Endpoint) {
+        this.targetS3Endpoint = targetS3Endpoint;
+    }
+
+    public String getTargetS3AccessKey() {
+        return targetS3AccessKey;
+    }
+
+    public void setTargetS3AccessKey(String targetS3AccessKey) {
+        this.targetS3AccessKey = targetS3AccessKey;
+    }
+
+    public String getTargetS3SecretKey() {
+        return targetS3SecretKey;
+    }
+
+    public void setTargetS3SecretKey(String targetS3SecretKey) {
+        this.targetS3SecretKey = targetS3SecretKey;
+    }
+
+    public String getTargetS3Bucket() {
+        return targetS3Bucket;
+    }
+
+    public void setTargetS3Bucket(String targetS3Bucket) {
+        this.targetS3Bucket = targetS3Bucket;
+    }
+
+    public String getTargetS3Prefix() {
+        return targetS3Prefix;
+    }
+
+    public void setTargetS3Prefix(String targetS3Prefix) {
+        this.targetS3Prefix = targetS3Prefix;
+    }
+
+    public String getTargetS3Region() {
+        return targetS3Region;
+    }
+
+    public void setTargetS3Region(String targetS3Region) {
+        this.targetS3Region = targetS3Region;
+    }
+
+    public Boolean getTargetS3PathStyleAccess() {
+        return targetS3PathStyleAccess;
+    }
+
+    public void setTargetS3PathStyleAccess(Boolean targetS3PathStyleAccess) {
+        this.targetS3PathStyleAccess = targetS3PathStyleAccess;
     }
 }

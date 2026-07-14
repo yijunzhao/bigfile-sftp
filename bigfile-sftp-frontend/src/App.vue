@@ -18,6 +18,13 @@ const form = reactive({
   targetUsername: '',
   targetPassword: '',
   targetPath: '',
+  targetS3Endpoint: '',
+  targetS3AccessKey: '',
+  targetS3SecretKey: '',
+  targetS3Bucket: '',
+  targetS3Prefix: '',
+  targetS3Region: 'us-east-1',
+  targetS3PathStyleAccess: true,
 })
 
 const loading = ref(false)
@@ -35,7 +42,8 @@ const canSubmit = computed(() => {
   const parallelCountValid = Number.isInteger(parallelCount) && parallelCount >= 1 && parallelCount <= 16
   const localTargetValid = form.targetType === 'LOCAL' && form.syncPath.trim()
   const sftpTargetValid = form.targetType === 'SFTP' && form.targetHost.trim() && Number.isInteger(targetPort) && targetPort >= 1 && targetPort <= 65535 && form.targetUsername.trim() && form.targetPassword && form.targetPath.trim().startsWith('/')
-  return form.host.trim() && Number.isInteger(port) && port >= 1 && port <= 65535 && form.username.trim() && form.password && form.sftpPath.trim().startsWith('/') && bandwidthLimitValid && parallelCountValid && (localTargetValid || sftpTargetValid)
+  const s3TargetValid = form.targetType === 'S3' && form.targetS3Endpoint.trim() && form.targetS3AccessKey.trim() && form.targetS3SecretKey && form.targetS3Bucket.trim()
+  return form.host.trim() && Number.isInteger(port) && port >= 1 && port <= 65535 && form.username.trim() && form.password && form.sftpPath.trim().startsWith('/') && bandwidthLimitValid && parallelCountValid && (localTargetValid || sftpTargetValid || s3TargetValid)
 })
 
 onMounted(loadConfig)
@@ -113,6 +121,13 @@ function payload() {
     targetUsername: form.targetUsername.trim(),
     targetPassword: form.targetPassword,
     targetPath: form.targetPath.trim(),
+    targetS3Endpoint: form.targetS3Endpoint.trim(),
+    targetS3AccessKey: form.targetS3AccessKey.trim(),
+    targetS3SecretKey: form.targetS3SecretKey,
+    targetS3Bucket: form.targetS3Bucket.trim(),
+    targetS3Prefix: form.targetS3Prefix.trim(),
+    targetS3Region: form.targetS3Region.trim() || 'us-east-1',
+    targetS3PathStyleAccess: Boolean(form.targetS3PathStyleAccess),
   }
 }
 
@@ -209,6 +224,10 @@ async function request(url, options = {}) {
             <input v-model="form.targetType" type="radio" value="SFTP" />
             远程SFTP服务
           </label>
+          <label class="radio-item">
+            <input v-model="form.targetType" type="radio" value="S3" />
+            S3/MinIO对象存储
+          </label>
         </div>
 
         <label v-if="form.targetType === 'LOCAL'" class="wide">
@@ -240,6 +259,43 @@ async function request(url, options = {}) {
           <label class="wide">
             <span>目标SFTP文件路径</span>
             <input v-model.trim="form.targetPath" maxlength="255" required placeholder="例如：/data/sftp-sync" />
+          </label>
+        </template>
+
+        <template v-if="form.targetType === 'S3'">
+          <label class="wide">
+            <span>S3 Endpoint</span>
+            <input v-model.trim="form.targetS3Endpoint" maxlength="255" required placeholder="例如：http://192.168.2.150:9000" />
+          </label>
+
+          <label>
+            <span>S3 Access Key</span>
+            <input v-model.trim="form.targetS3AccessKey" maxlength="100" required autocomplete="off" />
+          </label>
+
+          <label>
+            <span>S3 Secret Key</span>
+            <input v-model="form.targetS3SecretKey" maxlength="100" required type="password" autocomplete="off" />
+          </label>
+
+          <label>
+            <span>S3 Bucket</span>
+            <input v-model.trim="form.targetS3Bucket" maxlength="100" required placeholder="例如：bigfile" />
+          </label>
+
+          <label>
+            <span>S3 Region</span>
+            <input v-model.trim="form.targetS3Region" maxlength="50" placeholder="默认：us-east-1" />
+          </label>
+
+          <label class="wide">
+            <span>S3对象前缀</span>
+            <input v-model.trim="form.targetS3Prefix" maxlength="255" placeholder="例如：backup/bigfile/，可留空" />
+          </label>
+
+          <label class="checkbox-item wide">
+            <input v-model="form.targetS3PathStyleAccess" type="checkbox" />
+            MinIO Path Style Access
           </label>
         </template>
 

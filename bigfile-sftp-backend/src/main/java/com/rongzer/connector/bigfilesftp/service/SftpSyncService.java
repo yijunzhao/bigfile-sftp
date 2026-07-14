@@ -2,6 +2,10 @@ package com.rongzer.connector.bigfilesftp.service;
 
 import com.rongzer.connector.bigfilesftp.dto.SftpConfigRequest;
 import com.rongzer.connector.bigfilesftp.dto.SyncResultResponse;
+import com.rongzer.connector.bigfilesftp.entity.S3MultipartPart;
+import com.rongzer.connector.bigfilesftp.entity.S3MultipartUpload;
+import com.rongzer.connector.bigfilesftp.repository.S3MultipartPartRepository;
+import com.rongzer.connector.bigfilesftp.repository.S3MultipartUploadRepository;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.Session;
@@ -37,6 +41,23 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.CompletedMultipartUpload;
+import software.amazon.awssdk.services.s3.model.CompletedPart;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.UploadPartRequest;
+
+import java.net.URI;
+
 @Service
 /**
  * SFTP 文件同步服务。
@@ -54,9 +75,13 @@ public class SftpSyncService {
     private static final double ROUTE_TIMEOUT_SAFETY_FACTOR = 3D;
 
     private final CamelContext camelContext;
+    private final S3MultipartUploadRepository s3MultipartUploadRepository;
+    private final S3MultipartPartRepository s3MultipartPartRepository;
 
-    public SftpSyncService(CamelContext camelContext) {
+    public SftpSyncService(CamelContext camelContext, S3MultipartUploadRepository s3MultipartUploadRepository, S3MultipartPartRepository s3MultipartPartRepository) {
         this.camelContext = camelContext;
+        this.s3MultipartUploadRepository = s3MultipartUploadRepository;
+        this.s3MultipartPartRepository = s3MultipartPartRepository;
     }
 
     /**
@@ -115,6 +140,11 @@ public class SftpSyncService {
             }
             futures.add(executorService.submit(() -> {
                 try {
+                    if (syncTarget.s3Target() != null) {
+                        syncS3MultipartFile(request, syncTarget.s3Target(), sourceFile, bandwidthLimiter);
+                        files.add(sourceFile.relativePath());
+                        return;
+                    }
                     if (resumeDirectlyFromSourceOffset(request, syncTarget.writer(), sourceFile, bandwidthLimiter)) {
                         files.add(sourceFile.relativePath());
                         return;
@@ -228,6 +258,139 @@ public class SftpSyncService {
         }
 
         return promoteTemporaryIfComplete(targetWriter, sourceFile);
+    }
+
+    /**
+     * 将单个源 SFTP 文件同步到 S3/MinIO，使用 Multipart Upload 支持断点续传。
+     */
+    private void syncS3MultipartFile(SftpConfigRequest request, S3Target s3Target, SourceFile sourceFile, BandwidthLimiter bandwidthLimiter) throws Exception {
+        String objectKey = s3Target.prefix() + sourceFile.relativePath();
+        if (s3ObjectSize(s3Target, objectKey) == sourceFile.size()) {
+            LOGGER.info("S3 object already exists, skip: bucket={}, key={}", s3Target.bucket(), objectKey);
+            return;
+        }
+
+        long partSize = resolveS3PartSize(sourceFile.size());
+        S3MultipartUpload upload = findOrCreateS3Upload(request, s3Target, sourceFile, objectKey, partSize);
+        List<S3MultipartPart> uploadedParts = s3MultipartPartRepository.findByUploadIdOrderByPartNumberAsc(upload.getUploadId());
+        List<Integer> completedPartNumbers = uploadedParts.stream().map(S3MultipartPart::getPartNumber).toList();
+        int totalParts = (int) Math.ceil(sourceFile.size() * 1D / partSize);
+
+        try (S3Client s3Client = createS3Client(s3Target);
+             SftpConnection sourceConnection = connectSftp(request.host().trim(), request.port(), request.username().trim(), request.password())) {
+            for (int partNumber = 1; partNumber <= totalParts; partNumber++) {
+                if (completedPartNumbers.contains(partNumber)) {
+                    continue;
+                }
+                long offset = (long) (partNumber - 1) * partSize;
+                long currentPartSize = Math.min(partSize, sourceFile.size() - offset);
+                uploadS3Part(request, s3Target, sourceFile, s3Client, sourceConnection.channel(), upload.getUploadId(), objectKey, partNumber, offset, currentPartSize, bandwidthLimiter);
+            }
+
+            List<CompletedPart> completedParts = s3MultipartPartRepository.findByUploadIdOrderByPartNumberAsc(upload.getUploadId()).stream()
+                    .map(part -> CompletedPart.builder().partNumber(part.getPartNumber()).eTag(part.geteTag()).build())
+                    .toList();
+            s3Client.completeMultipartUpload(CompleteMultipartUploadRequest.builder()
+                    .bucket(s3Target.bucket())
+                    .key(objectKey)
+                    .uploadId(upload.getUploadId())
+                    .multipartUpload(CompletedMultipartUpload.builder().parts(completedParts).build())
+                    .build());
+            upload.setStatus("COMPLETED");
+            s3MultipartUploadRepository.save(upload);
+            LOGGER.info("S3 multipart upload completed: bucket={}, key={}", s3Target.bucket(), objectKey);
+        }
+    }
+
+    /**
+     * 上传一个 S3 Multipart 分片。
+     */
+    private void uploadS3Part(SftpConfigRequest request, S3Target s3Target, SourceFile sourceFile, S3Client s3Client, ChannelSftp sourceChannel, String uploadId, String objectKey, int partNumber, long offset, long size, BandwidthLimiter bandwidthLimiter) throws Exception {
+        String sourceFilePath = request.sftpPath().trim().replaceAll("/+$", "") + "/" + sourceFile.relativePath();
+        try (InputStream sourceInputStream = sourceChannel.get(sourceFilePath, null, offset);
+             InputStream limitedInputStream = bandwidthLimiter.enabled() ? new RateLimitedInputStream(sourceInputStream, bandwidthLimiter) : sourceInputStream;
+             InputStream boundedInputStream = new BoundedInputStream(limitedInputStream, size)) {
+            String eTag = s3Client.uploadPart(UploadPartRequest.builder()
+                            .bucket(s3Target.bucket())
+                            .key(objectKey)
+                            .uploadId(uploadId)
+                            .partNumber(partNumber)
+                            .contentLength(size)
+                            .build(),
+                    RequestBody.fromInputStream(boundedInputStream, size)).eTag();
+            S3MultipartPart part = new S3MultipartPart();
+            part.setUploadId(uploadId);
+            part.setPartNumber(partNumber);
+            part.setOffset(offset);
+            part.setSize(size);
+            part.seteTag(eTag);
+            s3MultipartPartRepository.save(part);
+            LOGGER.info("S3 multipart part uploaded: file={}, partNumber={}, size={}", sourceFile.relativePath(), partNumber, size);
+        }
+    }
+
+    /**
+     * 查找未完成上传任务，不存在时创建新的 Multipart Upload。
+     */
+    private S3MultipartUpload findOrCreateS3Upload(SftpConfigRequest request, S3Target s3Target, SourceFile sourceFile, String objectKey, long partSize) {
+        String sourcePath = request.sftpPath().trim().replaceAll("/+$", "") + "/" + sourceFile.relativePath();
+        return s3MultipartUploadRepository.findFirstBySourcePathAndBucketAndObjectKeyAndFileSizeAndStatusOrderByIdDesc(sourcePath, s3Target.bucket(), objectKey, sourceFile.size(), "UPLOADING")
+                .orElseGet(() -> {
+                    try (S3Client s3Client = createS3Client(s3Target)) {
+                        String uploadId = s3Client.createMultipartUpload(CreateMultipartUploadRequest.builder()
+                                .bucket(s3Target.bucket())
+                                .key(objectKey)
+                                .build()).uploadId();
+                        S3MultipartUpload upload = new S3MultipartUpload();
+                        upload.setSourcePath(sourcePath);
+                        upload.setBucket(s3Target.bucket());
+                        upload.setObjectKey(objectKey);
+                        upload.setUploadId(uploadId);
+                        upload.setFileSize(sourceFile.size());
+                        upload.setPartSize(partSize);
+                        upload.setStatus("UPLOADING");
+                        return s3MultipartUploadRepository.save(upload);
+                    }
+                });
+    }
+
+    /**
+     * 创建 S3 客户端。
+     */
+    private S3Client createS3Client(S3Target s3Target) {
+        return S3Client.builder()
+                .endpointOverride(URI.create(s3Target.endpoint()))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(s3Target.accessKey(), s3Target.secretKey())))
+                .region(Region.of(s3Target.region()))
+                .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(s3Target.pathStyleAccess()).build())
+                .build();
+    }
+
+    /**
+     * 查询 S3 对象大小，不存在时返回 -1。
+     */
+    private long s3ObjectSize(S3Target s3Target, String objectKey) {
+        try (S3Client s3Client = createS3Client(s3Target)) {
+            return s3Client.headObject(HeadObjectRequest.builder().bucket(s3Target.bucket()).key(objectKey).build()).contentLength();
+        } catch (NoSuchKeyException exception) {
+            return -1L;
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 404) {
+                return -1L;
+            }
+            throw exception;
+        }
+    }
+
+    /**
+     * 根据文件大小选择 S3 分片大小。
+     */
+    private long resolveS3PartSize(long fileSize) {
+        long defaultPartSize = 64L * 1024L * 1024L;
+        long minPartSizeForPartLimit = (long) Math.ceil(fileSize / 10_000D);
+        long partSize = Math.max(defaultPartSize, minPartSizeForPartLimit);
+        long remainder = partSize % (1024L * 1024L);
+        return remainder == 0 ? partSize : partSize + (1024L * 1024L - remainder);
     }
 
     /**
@@ -379,13 +542,27 @@ public class SftpSyncService {
             return new SyncTarget(
                     buildTargetSftpUri(request, camelDirectory),
                     request.targetPath().trim(),
-                    new SftpTargetWriter(request.targetHost().trim(), request.targetPort(), request.targetUsername().trim(), request.targetPassword(), request.targetPath().trim())
+                    new SftpTargetWriter(request.targetHost().trim(), request.targetPort(), request.targetUsername().trim(), request.targetPassword(), request.targetPath().trim()),
+                    null
             );
+        }
+
+        if ("S3".equals(request.targetType())) {
+            S3Target s3Target = new S3Target(
+                    request.targetS3Endpoint().trim(),
+                    request.targetS3AccessKey().trim(),
+                    request.targetS3SecretKey(),
+                    request.targetS3Bucket().trim(),
+                    normalizeS3Prefix(request.targetS3Prefix()),
+                    request.targetS3Region() == null || request.targetS3Region().isBlank() ? "us-east-1" : request.targetS3Region().trim(),
+                    request.targetS3PathStyleAccess() == null || request.targetS3PathStyleAccess()
+            );
+            return new SyncTarget("s3://" + s3Target.bucket() + "/" + s3Target.prefix(), s3Target.bucket() + "/" + s3Target.prefix(), null, s3Target);
         }
 
         Path targetDirectory = Path.of(request.syncPath().trim()).toAbsolutePath().normalize();
         Files.createDirectories(targetDirectory);
-        return new SyncTarget(buildFileUri(targetDirectory), targetDirectory.toString(), new LocalTargetWriter(targetDirectory));
+        return new SyncTarget(buildFileUri(targetDirectory), targetDirectory.toString(), new LocalTargetWriter(targetDirectory), null);
     }
 
     /**
@@ -710,7 +887,17 @@ public class SftpSyncService {
     /**
      * 同步目标信息。
      */
-    private record SyncTarget(String uri, String displayPath, TargetWriter writer) {
+    private String normalizeS3Prefix(String prefix) {
+        if (prefix == null || prefix.isBlank()) {
+            return "";
+        }
+        return prefix.trim().replaceAll("^/+", "").replaceAll("/+$", "") + "/";
+    }
+
+    private record SyncTarget(String uri, String displayPath, TargetWriter writer, S3Target s3Target) {
+    }
+
+    private record S3Target(String endpoint, String accessKey, String secretKey, String bucket, String prefix, String region, boolean pathStyleAccess) {
     }
 
     /**
@@ -1009,6 +1196,44 @@ public class SftpSyncService {
             int count = super.read(buffer, offset, length);
             if (count > 0) {
                 bandwidthLimiter.acquire(count);
+            }
+            return count;
+        }
+    }
+
+    /**
+     * 限制最多读取指定字节数的输入流包装器。
+     */
+    private static class BoundedInputStream extends FilterInputStream {
+
+        private long remainingBytes;
+
+        private BoundedInputStream(InputStream inputStream, long limit) {
+            super(inputStream);
+            this.remainingBytes = limit;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (remainingBytes <= 0) {
+                return -1;
+            }
+            int value = super.read();
+            if (value != -1) {
+                remainingBytes--;
+            }
+            return value;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            if (remainingBytes <= 0) {
+                return -1;
+            }
+            int readLength = (int) Math.min(length, remainingBytes);
+            int count = super.read(buffer, offset, readLength);
+            if (count > 0) {
+                remainingBytes -= count;
             }
             return count;
         }

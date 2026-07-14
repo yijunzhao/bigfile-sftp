@@ -32,7 +32,7 @@ public class SftpConfigService {
     public SftpConfigResponse getConfig() {
         return repository.findById(SINGLE_CONFIG_ID)
                 .map(this::toResponse)
-                .orElse(new SftpConfigResponse("", 22, "", "", "", null, 1, "LOCAL", "", "", 22, "", "", ""));
+                .orElse(new SftpConfigResponse("", 22, "", "", "", null, 1, "LOCAL", "", "", 22, "", "", "", "", "", "", "", "", "us-east-1", true));
     }
 
     /**
@@ -60,6 +60,13 @@ public class SftpConfigService {
         config.setTargetUsername(trimToEmpty(request.targetUsername()));
         config.setTargetPassword(request.targetPassword());
         config.setTargetPath(trimToEmpty(request.targetPath()));
+        config.setTargetS3Endpoint(trimToEmpty(request.targetS3Endpoint()));
+        config.setTargetS3AccessKey(trimToEmpty(request.targetS3AccessKey()));
+        config.setTargetS3SecretKey(request.targetS3SecretKey());
+        config.setTargetS3Bucket(trimToEmpty(request.targetS3Bucket()));
+        config.setTargetS3Prefix(trimToEmpty(request.targetS3Prefix()));
+        config.setTargetS3Region(trimToEmpty(request.targetS3Region()).isBlank() ? "us-east-1" : trimToEmpty(request.targetS3Region()));
+        config.setTargetS3PathStyleAccess(request.targetS3PathStyleAccess() == null || request.targetS3PathStyleAccess());
         return toResponse(repository.save(config));
     }
 
@@ -71,6 +78,14 @@ public class SftpConfigService {
     public void validateTarget(SftpConfigRequest request) {
         if ("LOCAL".equals(request.targetType())) {
             requireText(request.syncPath(), "文件同步路径不能为空");
+            return;
+        }
+
+        if ("S3".equals(request.targetType())) {
+            requireText(request.targetS3Endpoint(), "S3 Endpoint不能为空");
+            requireText(request.targetS3AccessKey(), "S3 Access Key不能为空");
+            requireText(request.targetS3SecretKey(), "S3 Secret Key不能为空");
+            requireText(request.targetS3Bucket(), "S3 Bucket不能为空");
             return;
         }
 
@@ -107,7 +122,14 @@ public class SftpConfigService {
                 config.getTargetPort() == null ? 22 : config.getTargetPort(),
                 config.getTargetUsername() == null ? "" : config.getTargetUsername(),
                 config.getTargetPassword() == null ? "" : config.getTargetPassword(),
-                config.getTargetPath() == null ? "" : config.getTargetPath()
+                config.getTargetPath() == null ? "" : config.getTargetPath(),
+                config.getTargetS3Endpoint() == null ? "" : config.getTargetS3Endpoint(),
+                config.getTargetS3AccessKey() == null ? "" : config.getTargetS3AccessKey(),
+                config.getTargetS3SecretKey() == null ? "" : config.getTargetS3SecretKey(),
+                config.getTargetS3Bucket() == null ? "" : config.getTargetS3Bucket(),
+                config.getTargetS3Prefix() == null ? "" : config.getTargetS3Prefix(),
+                config.getTargetS3Region() == null ? "us-east-1" : config.getTargetS3Region(),
+                config.getTargetS3PathStyleAccess() == null || config.getTargetS3PathStyleAccess()
         );
     }
 

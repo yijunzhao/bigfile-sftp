@@ -34,6 +34,13 @@ public record SftpConfigResponse(
         Integer targetPort,
         String targetUsername,
         String targetPassword,
-        String targetPath
+        String targetPath,
+        String targetS3Endpoint,
+        String targetS3AccessKey,
+        String targetS3SecretKey,
+        String targetS3Bucket,
+        String targetS3Prefix,
+        String targetS3Region,
+        Boolean targetS3PathStyleAccess
 ) {
 }
