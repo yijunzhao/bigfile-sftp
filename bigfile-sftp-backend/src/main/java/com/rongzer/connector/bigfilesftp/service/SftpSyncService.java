@@ -1128,6 +1128,7 @@ public class SftpSyncService {
             try (SftpConnection connection = connect()) {
                 String finalPath = remoteFilePath(fileName);
                 String temporaryPath = remoteFilePath(temporaryFileName(fileName));
+                ensureParentDirectories(connection.channel(), temporaryPath);
                 removeIfExists(connection.channel(), temporaryPath);
                 connection.channel().rename(finalPath, temporaryPath);
             }
@@ -1138,6 +1139,7 @@ public class SftpSyncService {
             try (SftpConnection connection = connect()) {
                 String finalPath = remoteFilePath(fileName);
                 String temporaryPath = remoteFilePath(temporaryFileName(fileName));
+                ensureParentDirectories(connection.channel(), finalPath);
                 removeIfExists(connection.channel(), finalPath);
                 connection.channel().rename(temporaryPath, finalPath);
             }
@@ -1146,7 +1148,9 @@ public class SftpSyncService {
         @Override
         public void appendToTemporary(String fileName, InputStream inputStream) throws Exception {
             try (SftpConnection connection = connect()) {
-                connection.channel().put(inputStream, remoteFilePath(temporaryFileName(fileName)), ChannelSftp.APPEND);
+                String temporaryPath = remoteFilePath(temporaryFileName(fileName));
+                ensureParentDirectories(connection.channel(), temporaryPath);
+                connection.channel().put(inputStream, temporaryPath, ChannelSftp.APPEND);
             }
         }
 
@@ -1180,6 +1184,39 @@ public class SftpSyncService {
             } catch (com.jcraft.jsch.SftpException exception) {
                 if (exception.id != ChannelSftp.SSH_FX_NO_SUCH_FILE) {
                     throw exception;
+                }
+            }
+        }
+
+        /**
+         * 自动创建目标 SFTP 文件的父目录，补齐手动流式写入时缺失的 autoCreate 能力。
+         */
+        private void ensureParentDirectories(ChannelSftp channel, String filePath) throws Exception {
+            int lastSeparator = filePath.lastIndexOf('/');
+            if (lastSeparator <= 0) {
+                return;
+            }
+            String parentPath = filePath.substring(0, lastSeparator).replaceAll("/+$", "");
+            if (parentPath.isBlank() || "/".equals(parentPath)) {
+                return;
+            }
+            StringBuilder currentPath = new StringBuilder(filePath.startsWith("/") ? "/" : "");
+            for (String segment : parentPath.replaceAll("^/+", "").split("/+")) {
+                if (segment.isBlank()) {
+                    continue;
+                }
+                if (currentPath.length() > 1 && currentPath.charAt(currentPath.length() - 1) != '/') {
+                    currentPath.append('/');
+                }
+                currentPath.append(segment);
+                String directory = currentPath.toString();
+                try {
+                    channel.stat(directory);
+                } catch (com.jcraft.jsch.SftpException exception) {
+                    if (exception.id != ChannelSftp.SSH_FX_NO_SUCH_FILE) {
+                        throw exception;
+                    }
+                    channel.mkdir(directory);
                 }
             }
         }
