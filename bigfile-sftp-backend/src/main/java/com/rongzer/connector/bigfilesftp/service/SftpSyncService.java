@@ -150,7 +150,7 @@ public class SftpSyncService {
                     String sourceUri = buildSftpUri(request, remoteScan.camelDirectory(), sourceFile.relativePath());
                     long timeoutMillis = resolveFileTimeoutMillis(sourceFile.size(), bandwidthLimiter.bytesPerSecond());
                     LOGGER.info("Camel SFTP source URI: {}, timeout={} ms", maskPassword(sourceUri), timeoutMillis);
-                    List<String> syncedFiles = runSyncRoute(sourceUri, syncTarget, bandwidthLimiter, timeoutMillis);
+                    List<String> syncedFiles = runSyncRoute(sourceUri, sourceFile.relativePath(), syncTarget, bandwidthLimiter, timeoutMillis);
                     if (syncedFiles.isEmpty() && promoteTemporaryIfComplete(syncTarget.writer(), sourceFile)) {
                         files.add(sourceFile.relativePath());
                     } else {
@@ -404,7 +404,7 @@ public class SftpSyncService {
      * @return 当前 Route 完成的文件列表
      * @throws Exception Route 创建、执行或停止异常
      */
-    private List<String> runSyncRoute(String sourceUri, SyncTarget syncTarget, BandwidthLimiter bandwidthLimiter, long timeoutMillis) throws Exception {
+    private List<String> runSyncRoute(String sourceUri, String sourceRelativePath, SyncTarget syncTarget, BandwidthLimiter bandwidthLimiter, long timeoutMillis) throws Exception {
         String routeId = "sftp-sync-" + UUID.randomUUID();
         List<String> files = Collections.synchronizedList(new ArrayList<>());
 
@@ -415,7 +415,10 @@ public class SftpSyncService {
                         .routeId(routeId)
                         .noStreamCaching()
                         .autoStartup(false)
-                        .process(exchange -> prepareResumableTransfer(exchange, syncTarget.writer(), bandwidthLimiter, files))
+                        .process(exchange -> {
+                            exchange.setProperty("sourceRelativePath", sourceRelativePath);
+                            prepareResumableTransfer(exchange, syncTarget.writer(), bandwidthLimiter, files);
+                        })
                         .process(exchange -> writeExchangeToTarget(exchange, syncTarget.writer()))
                         .process(exchange -> completeResumableTransfer(exchange, syncTarget.writer(), files));
             }
@@ -671,6 +674,10 @@ public class SftpSyncService {
      * 从 Camel Exchange 中解析当前文件名。
      */
     private String resolveFileName(Exchange exchange) {
+        String sourceRelativePath = exchange.getProperty("sourceRelativePath", String.class);
+        if (sourceRelativePath != null && !sourceRelativePath.isBlank()) {
+            return sourceRelativePath.replace('\\', '/');
+        }
         String relativePath = exchange.getMessage().getHeader("CamelFileRelativePath", String.class);
         if (relativePath != null && !relativePath.isBlank()) {
             return relativePath.replace('\\', '/');
